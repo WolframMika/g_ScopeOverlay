@@ -2,7 +2,7 @@
 
 > ⚠️ **Early Beta** — This project is actively being developed. Expect breaking changes, missing features, and rough edges as more functionality is added over time. If you run into any bugs or issues, please [open an issue](../../issues) — it helps a lot!
 
-A lightweight Windows screen magnifier overlay built for **PVP / PVE games with guns** — it simulates a scope by capturing and zooming in on a region of your screen in real time. Also useful as a general accessibility magnifier.
+A lightweight Windows screen magnifier overlay built for **Shooter games** — it simulates a scope by capturing and zooming in on a region of your screen in real time. Also useful as a general accessibility magnifier.
 
 ---
 
