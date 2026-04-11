@@ -1,186 +1,431 @@
-// ============================================================
-//  main.cpp
-//  Application entry point.
-//
-//  Responsibilities:
-//    1. Exposes g_running (atomic bool) for the overlay thread.
-//    2. Starts the overlay thread.
-//    3. Creates a hidden "tray host" window for Win32 message routing.
-//    4. Installs the system-tray icon.
-//    5. Runs the main message + render loop (handles tray events,
-//       opens/closes the settings window, calls Settings_RenderFrame()).
-//    6. On exit: signals overlay thread, joins it, removes tray icon.
-//
-//  NOTE: ImGui is NOT used in this file directly.
-//        Each window (overlay, settings) owns its own ImGui context.
-// ============================================================
+﻿#include "imgui.h"
+#include "imgui_impl_win32.h"
+#include "imgui_impl_dx11.h"
+#include <d3d11.h>
+#include <tchar.h>
+#include <vector>
+#include <algorithm>
+#include <dwmapi.h>
+#pragma comment(lib, "dwmapi.lib")
+#include <dxgi1_2.h>
+#pragma comment(lib, "dxgi.lib")
 
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#include <atomic>
-#include <thread>
+#define IMGUI_DEFINE_MATH_OPERATORS
 
-#include "tray.h"
-#include "overlay.h"
-#include "settings.h"
+// Data
+static ID3D11Device* g_pd3dDevice = nullptr;
+static ID3D11DeviceContext* g_pd3dDeviceContext = nullptr;
+static IDXGISwapChain* g_pSwapChain = nullptr;
+static bool                     g_SwapChainOccluded = false;
+static UINT                     g_ResizeWidth = 0, g_ResizeHeight = 0;
+static ID3D11RenderTargetView* g_mainRenderTargetView = nullptr;
 
-// ============================================================
-//  Shared atomic flags
-// ============================================================
-std::atomic<bool> g_running  { true };  // overlay thread monitors this
-std::atomic<bool> g_settingsOpen { false }; // informational (not strictly needed)
+// Screen capture state
+static IDXGIOutputDuplication* g_deskDupl = nullptr;
+static ID3D11Texture2D* g_captureTex = nullptr;
+static ID3D11ShaderResourceView* g_captureTexSRV = nullptr;
+static int g_cap_last_dx = 0, g_cap_last_dy = 0;
+static int g_cap_x = 0, g_cap_y = 0, g_cap_dx = 400, g_cap_dy = 400;
+static float g_cap_zoom = 2.0f;
+static float g_cap_round = 0.0f;
+bool g_show_fps_overlay = false;
+bool g_done = false;
+bool g_vsync = true;
 
-// ============================================================
-//  Hidden main window (tray host)
-// ============================================================
-static HINSTANCE g_hInstance = nullptr;
+// Forward declarations of helper functions
+void InitDesktopDuplication();
+void CaptureScreenRegion();
 
-static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg,
-                                    WPARAM wParam, LPARAM lParam)
+bool CreateDeviceD3D(HWND hWnd);
+
+void CleanupDeviceD3D();
+void CreateRenderTarget();
+void CleanupRenderTarget();
+void CleanupCaptureResources();
+
+LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+static void HelpMarker(const char* desc);
+static void FPSMarker(float scale = 0, ImVec2 offset = ImVec2(0.0,0.0));
+
+// Main code
+int main(int, char**)
 {
-    switch (msg)
-    {
-    // ---- Tray icon notifications ----------------------------
-    case WM_TRAYICON:
-        if (LOWORD(lParam) == WM_RBUTTONUP ||
-            LOWORD(lParam) == WM_CONTEXTMENU)
-        {
-            Tray_ShowContextMenu(hwnd);
-        }
-        else if (LOWORD(lParam) == WM_LBUTTONDBLCLK)
-        {
-            // Double-click opens settings (convenience)
-            if (!Settings_IsOpen())
-                Settings_Open(g_hInstance);
-            else
-            {
-                // Bring existing settings window to front
-                Settings_Open(g_hInstance); // handles bring-to-front internally
-            }
-        }
-        return 0;
+	// Make process DPI aware and obtain main monitor scale
+	ImGui_ImplWin32_EnableDpiAwareness();
+	float main_scale = ImGui_ImplWin32_GetDpiScaleForMonitor(::MonitorFromPoint(POINT{ 0, 0 }, MONITOR_DEFAULTTOPRIMARY));
 
-    // ---- Tray context menu commands -------------------------
-    case WM_COMMAND:
-        switch (LOWORD(wParam))
-        {
-        case ID_TRAY_SETTINGS:
-            if (!Settings_IsOpen())
-                Settings_Open(g_hInstance);
-            else
-                Settings_Open(g_hInstance); // brings to front
-            return 0;
+	// Create application window
+	WNDCLASSEXW wc = { sizeof(wc), CS_CLASSDC, WndProc, 0L, 0L, GetModuleHandle(nullptr), nullptr, nullptr, nullptr, nullptr, L"ImGui Example", nullptr };
+	::RegisterClassExW(&wc);
 
-        case ID_TRAY_EXIT:
-            // Signal everything to shut down
-            g_running = false;
-            PostQuitMessage(0);
-            return 0;
-        }
-        break;
+	int screenW = ::GetSystemMetrics(SM_CXSCREEN);
+	int screenH = ::GetSystemMetrics(SM_CYSCREEN);
 
-    case WM_DESTROY:
-        PostQuitMessage(0);
-        return 0;
-    }
-    return DefWindowProcW(hwnd, msg, wParam, lParam);
+	g_cap_x = (screenW) / 2;
+	g_cap_y = (screenH) / 2;
+
+	HWND hwnd = ::CreateWindowExW(
+		WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST,
+		wc.lpszClassName, L"Overlay", WS_POPUP,
+		0, 0, screenW, screenH,
+		nullptr, nullptr, wc.hInstance, nullptr);
+
+	MARGINS margins = { -1, -1, -1, -1 };
+	DwmExtendFrameIntoClientArea(hwnd, &margins);
+	SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
+	::SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);
+
+	// Initialize Direct3D
+	if (!CreateDeviceD3D(hwnd))
+	{
+		CleanupDeviceD3D();
+		::UnregisterClassW(wc.lpszClassName, wc.hInstance);
+		return 1;
+	}
+
+	InitDesktopDuplication();
+
+	// Show the window
+	::ShowWindow(hwnd, SW_SHOWDEFAULT);
+	::UpdateWindow(hwnd);
+
+	// Setup Dear ImGui context
+	IMGUI_CHECKVERSION();
+	ImGui::CreateContext();
+	ImGuiIO& io = ImGui::GetIO(); (void)io;
+	io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+	io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
+
+	// Setup Dear ImGui style
+	ImGui::StyleColorsDark();
+	//ImGui::StyleColorsLight();
+
+	// Setup scaling
+	ImGuiStyle& style = ImGui::GetStyle();
+	style.ScaleAllSizes(main_scale);
+	style.FontScaleDpi = main_scale;
+	//io.ConfigDpiScaleFonts = true;
+
+	// Setup Platform/Renderer backends
+	ImGui_ImplWin32_Init(hwnd);
+	ImGui_ImplDX11_Init(g_pd3dDevice, g_pd3dDeviceContext);
+
+	// Load Fonts
+	io.Fonts->AddFontDefaultVector();
+
+	while (!g_done)
+	{
+		// Poll and handle messages (inputs, window resize, etc.)
+		// See the WndProc() function below for our to dispatch events to the Win32 backend.
+		MSG msg;
+		while (::PeekMessage(&msg, nullptr, 0U, 0U, PM_REMOVE))
+		{
+			::TranslateMessage(&msg);
+			::DispatchMessage(&msg);
+			if (msg.message == WM_QUIT)
+				g_done = true;
+		}
+		if (g_done)
+			break;
+
+		// Handle window being minimized or screen locked
+		if (g_SwapChainOccluded && g_pSwapChain->Present(0, DXGI_PRESENT_TEST) == DXGI_STATUS_OCCLUDED)
+		{
+			::Sleep(10);
+			continue;
+		}
+		g_SwapChainOccluded = false;
+
+		// Handle window resize (we don't resize directly in the WM_SIZE handler)
+		if (g_ResizeWidth != 0 && g_ResizeHeight != 0)
+		{
+			CleanupRenderTarget();
+			g_pSwapChain->ResizeBuffers(0, g_ResizeWidth, g_ResizeHeight, DXGI_FORMAT_UNKNOWN, 0);
+			g_ResizeWidth = g_ResizeHeight = 0;
+			CreateRenderTarget();
+		}
+
+		// Start the Dear ImGui frame
+		ImGui_ImplDX11_NewFrame();
+		ImGui_ImplWin32_NewFrame();
+		ImGui::NewFrame();
+
+		// Fullscreen transparent non-interactive background
+		 {
+			ImGui::SetNextWindowPos(ImVec2(0, 0));
+			ImGui::SetNextWindowSize(io.DisplaySize);
+			ImGui::SetNextWindowBgAlpha(0.0f);
+			ImGui::Begin("##overlay_bg", nullptr,
+				ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+				ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav |
+				ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoDecoration |
+				ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing);
+
+			if (g_show_fps_overlay)
+				FPSMarker(2.0, ImVec2(8, 8));
+
+			// ??? Bug found: After PC wakes up from sleep screen region doesn't update and it is stuck at same frame
+			CaptureScreenRegion();
+
+			if (g_captureTexSRV)
+			{
+				ImVec2 pos = ImVec2((float)g_cap_x - (g_cap_dx / 2), (float)g_cap_y - (g_cap_dy / 2));
+				ImVec2 size = ImVec2(g_cap_dx, g_cap_dy);
+
+				ImDrawList* draw_list = ImGui::GetWindowDrawList();
+				draw_list->AddImageRounded(
+					(ImTextureID)g_captureTexSRV,
+					pos,
+					ImVec2(pos.x + size.x, pos.y + size.y),
+					ImVec2(0, 0),
+					ImVec2(1, 1),
+					IM_COL32_WHITE,
+					g_cap_round
+				);
+			}
+
+			ImGui::End();
+		}
+
+		 // Show settings window when our window is focused.
+		if (::GetForegroundWindow() == hwnd)
+		{
+			ImGui::Begin("Setting Menu", nullptr, ImGuiWindowFlags_NoCollapse);
+			ImGui::PushFont(NULL, style.FontSizeBase * 1.2);
+
+			FPSMarker();
+			ImGui::Checkbox("FPS Overlay", &g_show_fps_overlay);
+			ImGui::Checkbox("VSYNC", &g_vsync);
+
+			ImGui::Separator();
+
+			ImGui::Text("Capture Region");
+			ImGui::InputInt("x", &g_cap_x);  
+			ImGui::InputInt("y", &g_cap_y);
+			ImGui::InputInt("dx", &g_cap_dx); 
+			ImGui::InputInt("dy", &g_cap_dy);
+			ImGui::SliderFloat("zoom", &g_cap_zoom, 1.0f, 8.0f, "%.1fx");
+
+			float max_round = min((g_cap_dx)/2, (g_cap_dy) / 2);
+			ImGui::SliderFloat("roundness", &g_cap_round, 0.0f, max_round, "%.1fx");
+
+			ImGui::Separator();
+
+			g_done = ImGui::Button("Exit g_ScopeOverlay");
+			ImGui::SameLine(); HelpMarker("Fully closes the program.");
+			
+			ImGui::PopFont();
+			ImGui::End();
+		}
+
+		// Toggle click-through based on mouse capture
+		LONG_PTR exStyle = ::GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+		if (io.WantCaptureMouse)
+			exStyle &= ~WS_EX_TRANSPARENT;
+		else
+			exStyle |= WS_EX_TRANSPARENT;
+		::SetWindowLongPtrW(hwnd, GWL_EXSTYLE, exStyle);
+
+		// Rendering
+		ImGui::Render();
+		const float clear_color[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+		g_pd3dDeviceContext->OMSetRenderTargets(1, &g_mainRenderTargetView, nullptr);
+		g_pd3dDeviceContext->ClearRenderTargetView(g_mainRenderTargetView, clear_color);
+		ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+
+		HRESULT hr = g_pSwapChain->Present(g_vsync, 0); //vsync
+		g_SwapChainOccluded = (hr == DXGI_STATUS_OCCLUDED);
+	}
+
+	// Cleanup
+	CleanupCaptureResources();
+	ImGui_ImplDX11_Shutdown();
+	ImGui_ImplWin32_Shutdown();
+	ImGui::DestroyContext();
+	CleanupDeviceD3D();
+	::DestroyWindow(hwnd);
+	::UnregisterClassW(wc.lpszClassName, wc.hInstance);
+
+	return 0;
 }
 
-// ---- Creates the invisible host window ----------------------
-static HWND CreateMainWindow(HINSTANCE hInstance)
+// Helper functions
+bool CreateDeviceD3D(HWND hWnd)
 {
-    WNDCLASSEXW wc   = {};
-    wc.cbSize        = sizeof(wc);
-    wc.lpfnWndProc   = MainWndProc;
-    wc.hInstance     = hInstance;
-    wc.lpszClassName = L"OverlayAppMainClass";
-    RegisterClassExW(&wc);
+	// Setup swap chain
+	// This is a basic setup.
+	DXGI_SWAP_CHAIN_DESC sd;
+	ZeroMemory(&sd, sizeof(sd));
+	sd.BufferCount = 2;
+	sd.BufferDesc.Width = 0;
+	sd.BufferDesc.Height = 0;
+	sd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+	sd.BufferDesc.RefreshRate.Numerator = 60;
+	sd.BufferDesc.RefreshRate.Denominator = 1;
+	sd.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
+	sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+	sd.OutputWindow = hWnd;
+	sd.SampleDesc.Count = 1;
+	sd.SampleDesc.Quality = 0;
+	sd.Windowed = TRUE;
+	sd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
 
-    // WS_EX_TOOLWINDOW keeps it off the taskbar
-    HWND hwnd = CreateWindowExW(
-        WS_EX_TOOLWINDOW,
-        L"OverlayAppMainClass",
-        L"OverlayAppHost",
-        WS_OVERLAPPEDWINDOW,
-        0, 0, 0, 0,
-        nullptr, nullptr, hInstance, nullptr);
+	UINT createDeviceFlags = 0;
+	D3D_FEATURE_LEVEL featureLevel;
+	const D3D_FEATURE_LEVEL featureLevelArray[2] = { D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_0, };
+	HRESULT res = D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, createDeviceFlags, featureLevelArray, 2, D3D11_SDK_VERSION, &sd, &g_pSwapChain, &g_pd3dDevice, &featureLevel, &g_pd3dDeviceContext);
+	if (res == DXGI_ERROR_UNSUPPORTED)
+		res = D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, createDeviceFlags, featureLevelArray, 2, D3D11_SDK_VERSION, &sd, &g_pSwapChain, &g_pd3dDevice, &featureLevel, &g_pd3dDeviceContext);
+	if (res != S_OK)
+		return false;
 
-    // Keep the window hidden – it exists only to own the message queue
-    // and receive tray icon callbacks.
-    ShowWindow(hwnd, SW_HIDE);
-    return hwnd;
+	CreateRenderTarget();
+	return true;
 }
 
-// ============================================================
-//  WinMain
-// ============================================================
-int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/,
-                   LPSTR /*lpCmdLine*/, int /*nCmdShow*/)
+void InitDesktopDuplication()
 {
-    g_hInstance = hInstance;
+	IDXGIDevice* dxgiDevice = nullptr;
+	IDXGIAdapter* dxgiAdapter = nullptr;
+	IDXGIOutput* dxgiOutput = nullptr;
+	IDXGIOutput1* dxgiOutput1 = nullptr;
 
-    // ---- Start overlay on its own thread --------------------
-    std::thread overlayThread(OverlayThreadFunc);
+	g_pd3dDevice->QueryInterface(__uuidof(IDXGIDevice), (void**)&dxgiDevice);
+	dxgiDevice->GetAdapter(&dxgiAdapter);
+	dxgiAdapter->EnumOutputs(0, &dxgiOutput);
+	dxgiOutput->QueryInterface(__uuidof(IDXGIOutput1), (void**)&dxgiOutput1);
+	dxgiOutput1->DuplicateOutput(g_pd3dDevice, &g_deskDupl);
 
-    // ---- Hidden host window + tray icon ---------------------
-    HWND hMain = CreateMainWindow(hInstance);
-    if (!hMain)
-    {
-        g_running = false;
-        overlayThread.join();
-        return 1;
-    }
+	dxgiOutput1->Release(); dxgiOutput->Release();
+	dxgiAdapter->Release(); dxgiDevice->Release();
+}
 
-    if (!Tray_Init(hMain, hInstance))
-    {
-        g_running = false;
-        overlayThread.join();
-        return 1;
-    }
+void CleanupDeviceD3D()
+{
+	CleanupRenderTarget();
+	if (g_pSwapChain) { g_pSwapChain->Release(); g_pSwapChain = nullptr; }
+	if (g_pd3dDeviceContext) { g_pd3dDeviceContext->Release(); g_pd3dDeviceContext = nullptr; }
+	if (g_pd3dDevice) { g_pd3dDevice->Release(); g_pd3dDevice = nullptr; }
+}
 
-    // ---- Main message + render loop -------------------------
-    // PeekMessage so we can render the settings window each frame
-    // without blocking the loop.
-    MSG msg = {};
-    while (g_running)
-    {
-        // Process all pending Win32 messages
-        while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE))
-        {
-            if (msg.message == WM_QUIT)
-            {
-                g_running = false;
-                break;
-            }
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
+void CreateRenderTarget()
+{
+	ID3D11Texture2D* pBackBuffer;
+	g_pSwapChain->GetBuffer(0, IID_PPV_ARGS(&pBackBuffer));
+	g_pd3dDevice->CreateRenderTargetView(pBackBuffer, nullptr, &g_mainRenderTargetView);
+	pBackBuffer->Release();
+}
 
-        if (!g_running) break;
+void CleanupRenderTarget()
+{
+	if (g_mainRenderTargetView) { g_mainRenderTargetView->Release(); g_mainRenderTargetView = nullptr; }
+}
 
-        // Render settings window if it is currently open
-        if (Settings_IsOpen())
-        {
-            Settings_RenderFrame();
-        }
-        else
-        {
-            // Nothing to render on the main thread – yield to avoid
-            // burning 100 % CPU while the overlay is doing its own vsync.
-            Sleep(10);
-        }
-    }
+void CleanupCaptureResources()
+{
+	if (g_captureTexSRV) { g_captureTexSRV->Release(); g_captureTexSRV = nullptr; }
+	if (g_captureTex) { g_captureTex->Release();    g_captureTex = nullptr; }
+	if (g_deskDupl) { g_deskDupl->Release();      g_deskDupl = nullptr; }
+}
 
-    // ---- Shutdown -------------------------------------------
-    Settings_Close();           // destroy settings window (if open)
-    Tray_Destroy();             // remove tray icon
+extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
-    // Signal overlay thread (if not already set) and wait
-    g_running = false;
-    overlayThread.join();
+LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+	if (ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam))
+		return true;
 
-    DestroyWindow(hMain);
-    UnregisterClassW(L"OverlayAppMainClass", hInstance);
+	switch (msg)
+	{
+	case WM_SIZE:
+		if (wParam == SIZE_MINIMIZED)
+			return 0;
+		g_ResizeWidth = (UINT)LOWORD(lParam);
+		g_ResizeHeight = (UINT)HIWORD(lParam);
+		return 0;
+	case WM_SYSCOMMAND:
+		if ((wParam & 0xfff0) == SC_KEYMENU)
+			return 0;
+		break;
+	case WM_DESTROY:
+		::PostQuitMessage(0);
+		return 0;
+	}
+	return ::DefWindowProcW(hWnd, msg, wParam, lParam);
+}
 
-    return 0;
+// Captures the screen using ...
+void CaptureScreenRegion()
+{
+	if (!g_deskDupl) return;
+
+	IDXGIResource* deskRes = nullptr;
+	DXGI_OUTDUPL_FRAME_INFO frameInfo = {};
+
+	HRESULT hr = g_deskDupl->AcquireNextFrame(0, &frameInfo, &deskRes);
+	if (FAILED(hr)) return;
+
+	ID3D11Texture2D* deskTex = nullptr;
+	deskRes->QueryInterface(__uuidof(ID3D11Texture2D), (void**)&deskTex);
+
+	// Recreate our texture only when size changes
+	int l_cap_dx = g_cap_dx / g_cap_zoom;
+	int l_cap_dy = g_cap_dy / g_cap_zoom;
+	if (!g_captureTex || g_cap_last_dx != l_cap_dx || g_cap_last_dy != l_cap_dy)
+	{
+		if (g_captureTexSRV) { g_captureTexSRV->Release(); g_captureTexSRV = nullptr; }
+		if (g_captureTex) { g_captureTex->Release();    g_captureTex = nullptr; }
+
+		D3D11_TEXTURE2D_DESC td = {};
+		td.Width = l_cap_dx; td.Height = l_cap_dy;
+		td.MipLevels = 1; td.ArraySize = 1;
+		td.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+		td.SampleDesc.Count = 1;
+		td.Usage = D3D11_USAGE_DEFAULT;
+		td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+		g_pd3dDevice->CreateTexture2D(&td, nullptr, &g_captureTex);
+		g_pd3dDevice->CreateShaderResourceView(g_captureTex, nullptr, &g_captureTexSRV);
+		g_cap_last_dx = l_cap_dx; g_cap_last_dy = l_cap_dy;
+	}
+
+	// GPU-only region blit — no CPU readback
+	D3D11_BOX box = { (UINT)(g_cap_x - (l_cap_dx / 2)), (UINT)(g_cap_y - (l_cap_dy / 2)), 0, (UINT)(g_cap_x + (l_cap_dx / 2)), (UINT)(g_cap_y + (l_cap_dy	 / 2)), 1 };
+
+	g_pd3dDeviceContext->CopySubresourceRegion(g_captureTex, 0, 0, 0, 0, deskTex, 0, &box);
+
+	deskTex->Release();
+	deskRes->Release();
+	g_deskDupl->ReleaseFrame(); // safe now — we own g_captureTex
+}
+
+// Helper to display a little (?) mark which shows a tooltip when hovered.
+// In your own code you may want to display an actual icon if you are using a merged icon fonts (see docs/FONTS.md)
+static void HelpMarker(const char* desc)
+{
+	ImGui::TextDisabled("(?)");
+	if (ImGui::BeginItemTooltip())
+	{
+		ImGui::PushTextWrapPos(ImGui::GetFontSize() * 35.0f);
+		ImGui::TextUnformatted(desc);
+		ImGui::PopTextWrapPos();
+		ImGui::EndTooltip();
+	}
+}
+
+// Helper to display a FPS multy-colored mark.
+static void FPSMarker(float scale, ImVec2 offset)
+{
+	ImGuiIO& io = ImGui::GetIO(); (void)io;
+	ImGuiStyle& style = ImGui::GetStyle();
+
+	ImVec2 pos = ImGui::GetCursorPos();
+	ImGui::SetCursorPos(ImVec2(pos.x + offset.x, pos.y + offset.y));
+	ImGui::PushFont(NULL, style.FontSizeBase * scale);
+	if (io.Framerate < 15)
+		ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "%.1f FPS", io.Framerate);
+	else if (io.Framerate < 60)
+		ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "%.1f FPS", io.Framerate);
+	else
+		ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "%.1f FPS", io.Framerate);
+	ImGui::PopFont();
 }

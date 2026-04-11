@@ -1,0 +1,9 @@
+.vs/
+g_ScopeOverlay.sln
+g_ScopeOverlay.vcxproj
+g_ScopeOverlay.vcxproj.filters
+g_ScopeOverlay.vcxproj.user
+g_ScopeOverlay/
+imgui.ini
+imgui/
+x64/
