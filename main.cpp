@@ -12,6 +12,13 @@
 
 #define IMGUI_DEFINE_MATH_OPERATORS
 
+/*
+* Known Issues:
+* - **After waking from sleep:** The zoomed view may freeze on the last captured frame. Workaround: restart the application.
+* - **Not recordable:** The overlay cannot be captured by screen recording or streaming software.
+*/
+
+
 // Data
 static ID3D11Device* g_pd3dDevice = nullptr;
 static ID3D11DeviceContext* g_pd3dDeviceContext = nullptr;
