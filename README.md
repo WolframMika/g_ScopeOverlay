@@ -56,7 +56,7 @@ Run `ScopeOverlay.exe`. The overlay appears immediately as a transparent full-sc
 
 ## Disclaimer
 
-g_ScopeOverlay is not a cheat — it uses the same principle as the Windows built-in Magnifier. However, it may be considered unfair in competitive play and could conflict with anti-cheat systems. **Use it at your own risk.**
+g_ScopeOverlay is not a cheat or hack — it uses the same principle as the Windows built-in Magnifier. However, it may be considered unfair in competitive play and could conflict with anti-cheat systems. **Use it at your own risk.**
 
 ---
 
