@@ -1,101 +1,112 @@
-# OverlayApp – Setup & Build Guide
+# g_ScopeOverlay
 
-## Prerequisites
-- Visual Studio 2022 (Desktop development with C++ workload)
-- Windows SDK 10.0 or later
-- Dear ImGui (https://github.com/ocornut/imgui)
+> ⚠️ **Early Beta** — This project is actively being developed. Expect breaking changes, missing features, and rough edges as more functionality is added over time.
+
+A lightweight Windows screen magnifier overlay aimed at **gamers and accessibility users**. It captures a region of your screen in real time and displays it zoomed in without interrupting your workflow — useful for reading small in-game text, tracking minimap details, or magnifying UI elements that are hard to see.
 
 ---
 
-## Directory Layout
+## Features
+
+- Real-time screen region capture with GPU acceleration (no CPU readback)
+- Adjustable capture position, size, and zoom level (1×–8×)
+- Optional rounded corners on the zoomed view
+- Settings panel that appears when the overlay window is focused
+- FPS display (optional)
+- VSync toggle
+- Click-through when the settings panel is not in focus — the overlay never interrupts your work
+
+---
+
+## Requirements
+
+- Windows 10 or Windows 11 (64-bit)
+- A GPU that supports DirectX 11
+- Visual Studio 2022 with the **Desktop development with C++** workload
+- Windows SDK 10.0 or later
+- [Dear ImGui](https://github.com/ocornut/imgui)
+
+---
+
+## Building from Source
+
+### 1. Get Dear ImGui
 
 ```
-OverlayApp/
+git clone https://github.com/ocornut/imgui.git tmp_imgui
+```
+
+### 2. Copy the required ImGui files into `imgui/`
+
+From the `tmp_imgui/` root, copy:
+
+```
+imgui.h  imgui.cpp  imgui_draw.cpp  imgui_tables.cpp  imgui_widgets.cpp
+imgui_internal.h  imconfig.h
+imstb_rectpack.h  imstb_textedit.h  imstb_truetype.h
+```
+
+From `tmp_imgui/backends/`, copy:
+
+```
+imgui_impl_win32.h  imgui_impl_win32.cpp
+imgui_impl_dx11.h   imgui_impl_dx11.cpp
+```
+
+Your folder should look like this:
+
+```
+ScopeOverlay/
 ├── main.cpp
-├── overlay.h
-├── overlay.cpp
-├── settings.h
-├── settings.cpp
-├── tray.h
-├── tray.cpp
-├── OverlayApp.vcxproj
-└── imgui/                   ← you create this folder
+├── ScopeOverlay.vcxproj
+└── imgui/
     ├── imgui.h
     ├── imgui.cpp
-    ├── imgui_draw.cpp
-    ├── imgui_tables.cpp
-    ├── imgui_widgets.cpp
-    ├── imgui_internal.h
-    ├── imconfig.h
-    ├── imstb_rectpack.h
-    ├── imstb_textedit.h
-    ├── imstb_truetype.h
-    ├── imgui_impl_win32.h
-    ├── imgui_impl_win32.cpp
-    ├── imgui_impl_dx11.h
-    └── imgui_impl_dx11.cpp
+    └── ... (all files listed above)
 ```
 
----
+### 3. Build
 
-## Step-by-step
-
-1. **Clone / download Dear ImGui**
-   ```
-   git clone https://github.com/ocornut/imgui.git tmp_imgui
-   ```
-
-2. **Copy required files** into `OverlayApp/imgui/`:
-   - From `tmp_imgui/` root:
-     `imgui.h`, `imgui.cpp`, `imgui_draw.cpp`, `imgui_tables.cpp`,
-     `imgui_widgets.cpp`, `imgui_internal.h`, `imconfig.h`,
-     `imstb_rectpack.h`, `imstb_textedit.h`, `imstb_truetype.h`
-   - From `tmp_imgui/backends/`:
-     `imgui_impl_win32.h`, `imgui_impl_win32.cpp`,
-     `imgui_impl_dx11.h`, `imgui_impl_dx11.cpp`
-
-3. **Open `OverlayApp.vcxproj`** in Visual Studio 2022.
-
-4. **Select `x64`** platform (the project only targets x64).
-
-5. **Build** → `Debug` or `Release`.
+1. Open `ScopeOverlay.vcxproj` in Visual Studio 2022.
+2. Select the **x64** platform.
+3. Build in **Debug**.
 
 ---
 
-## Architecture Summary
+## Usage
 
-| Component         | Thread      | D3D11 Device | ImGui Context | Role                          |
-|-------------------|-------------|--------------|---------------|-------------------------------|
-| Overlay Window    | Own thread  | Own          | Own           | Transparent full-screen HUD   |
-| Settings Window   | Main thread | Own          | Own           | ImGui UI panel                |
-| Hidden Main Wnd   | Main thread | —            | —             | Message loop + tray icon      |
+Run `ScopeOverlay.exe`. The overlay appears immediately as a transparent full-screen window.
 
-### Key design decisions
-- `g_running` (`std::atomic<bool>`) is the single shutdown signal.
-- Overlay thread checks `g_running` every frame; exits its loop when `false`.
-- The main thread uses `PeekMessage` so it can call `Settings_RenderFrame()`
-  each iteration without stalling.
-- Closing the Settings window calls `Settings_Close()` which destroys only
-  the settings DX11 device + ImGui context; the overlay is unaffected.
-- Tray → Exit posts `WM_QUIT` and sets `g_running = false`, after which
-  `main()` joins the overlay thread before exiting.
+**To open the settings panel**, click the overlay window in the taskbar (or Alt+Tab to it). The settings panel will appear.
 
-### Overlay transparency
-The overlay window uses:
-- `WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TRANSPARENT` (click-through, always on top)
-- `SetLayeredWindowAttributes(hwnd, RGB(0,0,0), 0, LWA_COLORKEY)`
-- DX11 clears the back buffer to pure black `{0,0,0,1}`
+| Setting | Description |
+|---|---|
+| **x / y** | Center position of the captured region (screen pixels) |
+| **dx / dy** | Width and height of the captured region |
+| **zoom** | How much to magnify the captured region (1×–8×) |
+| **roundness** | Corner radius of the displayed zoomed image |
+| **FPS Overlay** | Show a color-coded frame rate counter on screen |
+| **VSYNC** | Limit rendering to your monitor's refresh rate |
+| **Exit** | Close the program |
 
-Any pixel left as pure black is rendered transparent.  ImGui draws only
-with non-black colors, so all HUD text/shapes are visible.
+**To hide the settings panel**, click anywhere outside it or switch to another application — the overlay becomes click-through again automatically.
 
 ---
 
-## Extending
+## Known Issues
 
-- To add more overlay visuals: edit the `ImGui::Begin("##hud", …)` block
-  in `overlay.cpp`.
-- To add more settings controls: edit `Settings_RenderFrame()` in
-  `settings.cpp`.
-- To persist settings: write/read a simple INI/JSON at startup and
-  `Settings_Close()`.
+- **After waking from sleep:** The zoomed view may freeze on the last captured frame. Workaround: restart the application.
+
+---
+
+## Prior Art
+
+This project is functionally similar to [Scope X](https://centerpointgaming.com/scopex.html), a commercial screen magnifier overlay. g_ScopeOverlay was developed independently — the similarity was only discovered after the first versions were already built. g_ScopeOverlay is fully open-source under the Apache License 2.0.
+
+---
+
+## License
+
+This project is licensed under the **Apache License 2.0**. See [LICENSE](LICENSE) for details.
+
+This project uses [Dear ImGui](https://github.com/ocornut/imgui) by Omar Cornut, licensed under the MIT License.
