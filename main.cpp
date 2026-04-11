@@ -6,6 +6,7 @@
 #include <vector>
 #include <algorithm>
 #include <dwmapi.h>
+#include <windows.h>
 #pragma comment(lib, "dwmapi.lib")
 #include <dxgi1_2.h>
 #pragma comment(lib, "dxgi.lib")
@@ -17,7 +18,6 @@
 * - **After waking from sleep:** The zoomed view may freeze on the last captured frame. Workaround: restart the application.
 * - **Not recordable:** The overlay cannot be captured by screen recording or streaming software.
 */
-
 
 // Data
 static ID3D11Device* g_pd3dDevice = nullptr;
@@ -55,7 +55,7 @@ static void HelpMarker(const char* desc);
 static void FPSMarker(float scale = 0, ImVec2 offset = ImVec2(0.0,0.0));
 
 // Main code
-int main(int, char**)
+int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
 {
 	// Make process DPI aware and obtain main monitor scale
 	ImGui_ImplWin32_EnableDpiAwareness();
