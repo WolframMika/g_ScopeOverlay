@@ -1,20 +1,20 @@
 # g_ScopeOverlay
 
-> ⚠️ **Early Beta** — This project is actively being developed. Expect breaking changes, missing features, and rough edges as more functionality is added over time.
+> ⚠️ **Early Beta** — This project is actively being developed. Expect breaking changes, missing features, and rough edges as more functionality is added over time. If you run into any bugs or issues, please [open an issue](../../issues) — it helps a lot!
 
-A lightweight Windows screen magnifier overlay aimed at **gamers and accessibility users**. It captures a region of your screen in real time and displays it zoomed in without interrupting your workflow — useful for reading small in-game text, tracking minimap details, or magnifying UI elements that are hard to see.
+A lightweight Windows screen magnifier overlay built for **PVP games** — it simulates a scope by capturing and zooming in on a region of your screen in real time. Also useful as a general accessibility magnifier.
 
 ---
 
 ## Features
 
 - Real-time screen region capture with GPU acceleration (no CPU readback)
+- Works alongside any game or application — no integrations, hooks, injections, or mods required
 - Adjustable capture position, size, and zoom level (1×–8×)
 - Optional rounded corners on the zoomed view
 - Settings panel that appears when the overlay window is focused
 - FPS display (optional)
 - VSync toggle
-- Click-through when the settings panel is not in focus — the overlay never interrupts your work
 
 ---
 
@@ -25,6 +25,38 @@ A lightweight Windows screen magnifier overlay aimed at **gamers and accessibili
 - Visual Studio 2022 with the **Desktop development with C++** workload
 - Windows SDK 10.0 or later
 - [Dear ImGui](https://github.com/ocornut/imgui)
+
+---
+
+## Usage
+
+Run `ScopeOverlay.exe`. The overlay appears immediately as a transparent full-screen window.
+
+**To open the settings panel**, click the overlay window in the taskbar (or Alt+Tab to it). The settings panel will appear.
+
+| Setting | Description |
+|---|---|
+| **x / y** | Center position of the captured region (screen pixels) |
+| **dx / dy** | Width and height of the captured region |
+| **zoom** | How much to magnify the captured region (1×–8×) |
+| **roundness** | Corner radius of the displayed zoomed image |
+| **FPS Overlay** | Show a color-coded frame rate counter on screen |
+| **VSYNC** | Limit rendering to your monitor's refresh rate |
+| **Exit** | Close the program |
+
+**To hide the settings panel**, click anywhere outside it or switch to another application — the overlay becomes click-through again automatically.
+
+---
+
+## Known Issues
+
+- **After waking from sleep:** The zoomed view may freeze on the last captured frame. Workaround: restart the application.
+
+---
+
+## Disclaimer
+
+g_ScopeOverlay is not a cheat — it uses the same principle as the Windows built-in Magnifier. However, it may be considered unfair in competitive play and could conflict with anti-cheat systems. **Use it at your own risk.**
 
 ---
 
@@ -56,9 +88,9 @@ imgui_impl_dx11.h   imgui_impl_dx11.cpp
 Your folder should look like this:
 
 ```
-ScopeOverlay/
+g_ScopeOverlay/
 ├── main.cpp
-├── ScopeOverlay.vcxproj
+├── g_ScopeOverlay.vcxproj
 └── imgui/
     ├── imgui.h
     ├── imgui.cpp
@@ -67,35 +99,9 @@ ScopeOverlay/
 
 ### 3. Build
 
-1. Open `ScopeOverlay.vcxproj` in Visual Studio 2022.
+1. Open `g_ScopeOverlay.vcxproj` in Visual Studio 2022.
 2. Select the **x64** platform.
 3. Build in **Debug**.
-
----
-
-## Usage
-
-Run `ScopeOverlay.exe`. The overlay appears immediately as a transparent full-screen window.
-
-**To open the settings panel**, click the overlay window in the taskbar (or Alt+Tab to it). The settings panel will appear.
-
-| Setting | Description |
-|---|---|
-| **x / y** | Center position of the captured region (screen pixels) |
-| **dx / dy** | Width and height of the captured region |
-| **zoom** | How much to magnify the captured region (1×–8×) |
-| **roundness** | Corner radius of the displayed zoomed image |
-| **FPS Overlay** | Show a color-coded frame rate counter on screen |
-| **VSYNC** | Limit rendering to your monitor's refresh rate |
-| **Exit** | Close the program |
-
-**To hide the settings panel**, click anywhere outside it or switch to another application — the overlay becomes click-through again automatically.
-
----
-
-## Known Issues
-
-- **After waking from sleep:** The zoomed view may freeze on the last captured frame. Workaround: restart the application.
 
 ---
 
