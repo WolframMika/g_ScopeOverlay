@@ -1,9 +1,10 @@
-﻿#include "imgui.h"
+﻿#include "gCapture.h"
+
+#include "imgui.h"
 #include "imgui_impl_win32.h"
 #include "imgui_impl_dx11.h"
 #include <d3d11.h>
 #include <tchar.h>
-#include <vector>
 #include <algorithm>
 #include <dwmapi.h>
 #include <windows.h>
@@ -13,10 +14,13 @@
 
 #define IMGUI_DEFINE_MATH_OPERATORS
 
+
+
 /*
 * Known Issues:
 * - **After waking from sleep:** The zoomed view may freeze on the last captured frame. Workaround: restart the application.
 * - **Not recordable:** The overlay cannot be captured by screen recording or streaming software.
+* - Deosn't work without imgui_demo.cpp
 */
 
 // Data
@@ -28,31 +32,25 @@ static UINT                     g_ResizeWidth = 0, g_ResizeHeight = 0;
 static ID3D11RenderTargetView* g_mainRenderTargetView = nullptr;
 
 // Screen capture state
-static IDXGIOutputDuplication* g_deskDupl = nullptr;
-static ID3D11Texture2D* g_captureTex = nullptr;
-static ID3D11ShaderResourceView* g_captureTexSRV = nullptr;
-static int g_cap_last_dx = 0, g_cap_last_dy = 0;
-static int g_cap_x = 0, g_cap_y = 0, g_cap_dx = 400, g_cap_dy = 400;
-static float g_cap_zoom = 2.0f;
-static float g_cap_round = 0.0f;
+gSizePos g_SP = { 400, 400, 0, 0 };
+static float g_zoom = 2.0f;
+static float g_round = 0.0f;
+
 bool g_show_fps_overlay = false;
 bool g_done = false;
+unsigned int g_mode = 0;
 bool g_vsync = true;
 
 // Forward declarations of helper functions
-void InitDesktopDuplication();
-void CaptureScreenRegion();
-
 bool CreateDeviceD3D(HWND hWnd);
 
 void CleanupDeviceD3D();
 void CreateRenderTarget();
 void CleanupRenderTarget();
-void CleanupCaptureResources();
 
 LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 static void HelpMarker(const char* desc);
-static void FPSMarker(float scale = 0, ImVec2 offset = ImVec2(0.0,0.0));
+static void FPSMarker(float scale = 0, ImVec2 offset = ImVec2(0.0, 0.0));
 
 // Main code
 int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
@@ -68,8 +66,8 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
 	int screenW = ::GetSystemMetrics(SM_CXSCREEN);
 	int screenH = ::GetSystemMetrics(SM_CYSCREEN);
 
-	g_cap_x = (screenW) / 2;
-	g_cap_y = (screenH) / 2;
+	g_SP.x = (screenW) / 2;
+	g_SP.y = (screenH) / 2;
 
 	HWND hwnd = ::CreateWindowExW(
 		WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST,
@@ -90,7 +88,8 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
 		return 1;
 	}
 
-	InitDesktopDuplication();
+	// Create capture
+	gCapture* screen_capture = new gCapture(g_SP, g_pd3dDevice, g_pd3dDeviceContext);
 
 	// Show the window
 	::ShowWindow(hwnd, SW_SHOWDEFAULT);
@@ -158,7 +157,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
 		ImGui::NewFrame();
 
 		// Fullscreen transparent non-interactive background
-		 {
+		{
 			ImGui::SetNextWindowPos(ImVec2(0, 0));
 			ImGui::SetNextWindowSize(io.DisplaySize);
 			ImGui::SetNextWindowBgAlpha(0.0f);
@@ -172,32 +171,49 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
 				FPSMarker(2.0, ImVec2(8, 8));
 
 			// ??? Bug found: After PC wakes up from sleep screen region doesn't update and it is stuck at same frame
-			CaptureScreenRegion();
+			screen_capture->capture({ (unsigned int)(g_SP.dx / g_zoom), (unsigned int)(g_SP.dy / g_zoom), g_SP.x, g_SP.y });
 
-			if (g_captureTexSRV)
+			ID3D11ShaderResourceView* captureTexSRV = screen_capture->get();
+
+			if (captureTexSRV)
 			{
-				ImVec2 pos = ImVec2((float)g_cap_x - (g_cap_dx / 2), (float)g_cap_y - (g_cap_dy / 2));
-				ImVec2 size = ImVec2(g_cap_dx, g_cap_dy);
+				ImVec2 pos = ImVec2((float)g_SP.x - (g_SP.dx / 2), (float)g_SP.y - (g_SP.dy / 2));
+				ImVec2 size = ImVec2(g_SP.dx, g_SP.dy);
 
 				ImDrawList* draw_list = ImGui::GetWindowDrawList();
 				draw_list->AddImageRounded(
-					(ImTextureID)g_captureTexSRV,
+					(ImTextureID)captureTexSRV,
 					pos,
 					ImVec2(pos.x + size.x, pos.y + size.y),
 					ImVec2(0, 0),
 					ImVec2(1, 1),
 					IM_COL32_WHITE,
-					g_cap_round
+					g_round
 				);
 			}
 
 			ImGui::End();
 		}
 
-		 // Show settings window when our window is focused.
+		// Show settings window when our window is focused.
 		if (::GetForegroundWindow() == hwnd)
 		{
-			ImGui::Begin("Setting Menu", nullptr, ImGuiWindowFlags_NoCollapse);
+			ImGui::Begin("g_ScopeOverlay Setting", nullptr, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_MenuBar); //finish menu
+
+			if (ImGui::BeginMenuBar())
+			{
+				if (ImGui::BeginMenu("File"))
+				{
+					if (ImGui::MenuItem("Exit"))
+					{
+						g_done = true;
+					}
+					ImGui::EndMenu();
+				}
+
+				ImGui::EndMenuBar();
+			}
+
 			ImGui::PushFont(NULL, style.FontSizeBase * 1.2);
 
 			FPSMarker();
@@ -206,21 +222,49 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
 
 			ImGui::Separator();
 
-			ImGui::Text("Capture Region");
-			ImGui::InputInt("x", &g_cap_x);  
-			ImGui::InputInt("y", &g_cap_y);
-			ImGui::InputInt("dx", &g_cap_dx); 
-			ImGui::InputInt("dy", &g_cap_dy);
-			ImGui::SliderFloat("zoom", &g_cap_zoom, 1.0f, 8.0f, "%.1fx");
+			unsigned int step = 1;
+			unsigned int step_fast = 10;
+			float max_round = min((g_SP.dx) / 2, (g_SP.dy) / 2);
 
-			float max_round = min((g_cap_dx)/2, (g_cap_dy) / 2);
-			ImGui::SliderFloat("roundness", &g_cap_round, 0.0f, max_round, "%.1fx");
+			ImGui::Text("Capture Region");
+
+			if (ImGui::InputScalar("x", ImGuiDataType_U32, &g_SP.x, &step, &step_fast)) {
+				g_SP.x = min(screenW - g_SP.dx / 2, max(0 + g_SP.dx / 2, g_SP.x));
+			}
+
+			if (ImGui::InputScalar("y", ImGuiDataType_U32, &g_SP.y, &step, &step_fast)) {
+				g_SP.y = min(screenH - g_SP.dy / 2, max(0 + g_SP.dy / 2, g_SP.y));
+			}
+
+			if (ImGui::Button("Center to screen")) {
+				g_SP.x = (screenW) / 2;
+				g_SP.y = (screenH) / 2;
+			}
+
+			if (ImGui::InputScalar("dx", ImGuiDataType_U32, &g_SP.dx, &step, &step_fast)) {
+				g_SP.dx = min(screenW, g_SP.dx);
+				g_SP.x = min(screenW - g_SP.dx / 2, max(0 + g_SP.dx / 2, g_SP.x));
+				g_round = min(max_round, g_round);
+			}
+
+			if (ImGui::InputScalar("dy", ImGuiDataType_U32, &g_SP.dy, &step, &step_fast)) {
+				g_SP.dy = min(screenH, g_SP.dy);
+				g_SP.y = min(screenH - g_SP.dy / 2, max(0 + g_SP.dy / 2, g_SP.y));
+				g_round = min(max_round, g_round);
+			}
+
+			ImGui::SliderFloat("zoom", &g_zoom, 1.0f, 8.0f, "%.1fx");
+
+			if (ImGui::SliderFloat("roundness", &g_round, 0.0f, max_round, "%.1fx")) {
+				g_round = min(max_round, g_round);
+			}
 
 			ImGui::Separator();
 
-			g_done = ImGui::Button("Exit g_ScopeOverlay");
+			if (ImGui::Button("Exit g_ScopeOverlay"))
+				g_done = true;
 			ImGui::SameLine(); HelpMarker("Fully closes the program.");
-			
+
 			ImGui::PopFont();
 			ImGui::End();
 		}
@@ -245,7 +289,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
 	}
 
 	// Cleanup
-	CleanupCaptureResources();
+	if (screen_capture) { delete screen_capture; screen_capture = nullptr; }
 	ImGui_ImplDX11_Shutdown();
 	ImGui_ImplWin32_Shutdown();
 	ImGui::DestroyContext();
@@ -290,23 +334,6 @@ bool CreateDeviceD3D(HWND hWnd)
 	return true;
 }
 
-void InitDesktopDuplication()
-{
-	IDXGIDevice* dxgiDevice = nullptr;
-	IDXGIAdapter* dxgiAdapter = nullptr;
-	IDXGIOutput* dxgiOutput = nullptr;
-	IDXGIOutput1* dxgiOutput1 = nullptr;
-
-	g_pd3dDevice->QueryInterface(__uuidof(IDXGIDevice), (void**)&dxgiDevice);
-	dxgiDevice->GetAdapter(&dxgiAdapter);
-	dxgiAdapter->EnumOutputs(0, &dxgiOutput);
-	dxgiOutput->QueryInterface(__uuidof(IDXGIOutput1), (void**)&dxgiOutput1);
-	dxgiOutput1->DuplicateOutput(g_pd3dDevice, &g_deskDupl);
-
-	dxgiOutput1->Release(); dxgiOutput->Release();
-	dxgiAdapter->Release(); dxgiDevice->Release();
-}
-
 void CleanupDeviceD3D()
 {
 	CleanupRenderTarget();
@@ -326,13 +353,6 @@ void CreateRenderTarget()
 void CleanupRenderTarget()
 {
 	if (g_mainRenderTargetView) { g_mainRenderTargetView->Release(); g_mainRenderTargetView = nullptr; }
-}
-
-void CleanupCaptureResources()
-{
-	if (g_captureTexSRV) { g_captureTexSRV->Release(); g_captureTexSRV = nullptr; }
-	if (g_captureTex) { g_captureTex->Release();    g_captureTex = nullptr; }
-	if (g_deskDupl) { g_deskDupl->Release();      g_deskDupl = nullptr; }
 }
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -361,49 +381,6 @@ LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 	return ::DefWindowProcW(hWnd, msg, wParam, lParam);
 }
 
-// Captures the screen using ...
-void CaptureScreenRegion()
-{
-	if (!g_deskDupl) return;
-
-	IDXGIResource* deskRes = nullptr;
-	DXGI_OUTDUPL_FRAME_INFO frameInfo = {};
-
-	HRESULT hr = g_deskDupl->AcquireNextFrame(0, &frameInfo, &deskRes);
-	if (FAILED(hr)) return;
-
-	ID3D11Texture2D* deskTex = nullptr;
-	deskRes->QueryInterface(__uuidof(ID3D11Texture2D), (void**)&deskTex);
-
-	// Recreate our texture only when size changes
-	int l_cap_dx = g_cap_dx / g_cap_zoom;
-	int l_cap_dy = g_cap_dy / g_cap_zoom;
-	if (!g_captureTex || g_cap_last_dx != l_cap_dx || g_cap_last_dy != l_cap_dy)
-	{
-		if (g_captureTexSRV) { g_captureTexSRV->Release(); g_captureTexSRV = nullptr; }
-		if (g_captureTex) { g_captureTex->Release();    g_captureTex = nullptr; }
-
-		D3D11_TEXTURE2D_DESC td = {};
-		td.Width = l_cap_dx; td.Height = l_cap_dy;
-		td.MipLevels = 1; td.ArraySize = 1;
-		td.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-		td.SampleDesc.Count = 1;
-		td.Usage = D3D11_USAGE_DEFAULT;
-		td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-		g_pd3dDevice->CreateTexture2D(&td, nullptr, &g_captureTex);
-		g_pd3dDevice->CreateShaderResourceView(g_captureTex, nullptr, &g_captureTexSRV);
-		g_cap_last_dx = l_cap_dx; g_cap_last_dy = l_cap_dy;
-	}
-
-	// GPU-only region blit — no CPU readback
-	D3D11_BOX box = { (UINT)(g_cap_x - (l_cap_dx / 2)), (UINT)(g_cap_y - (l_cap_dy / 2)), 0, (UINT)(g_cap_x + (l_cap_dx / 2)), (UINT)(g_cap_y + (l_cap_dy	 / 2)), 1 };
-
-	g_pd3dDeviceContext->CopySubresourceRegion(g_captureTex, 0, 0, 0, 0, deskTex, 0, &box);
-
-	deskTex->Release();
-	deskRes->Release();
-	g_deskDupl->ReleaseFrame(); // safe now — we own g_captureTex
-}
 
 // Helper to display a little (?) mark which shows a tooltip when hovered.
 // In your own code you may want to display an actual icon if you are using a merged icon fonts (see docs/FONTS.md)
