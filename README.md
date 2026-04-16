@@ -50,7 +50,6 @@ Run `ScopeOverlay.exe`. The overlay appears immediately as a transparent full-sc
 
 ## Known Issues
 
-- **After waking from sleep:** The zoomed view may freeze on the last captured frame. Workaround: restart the application.
 - **Not recordable:** The overlay cannot be captured by screen recording or streaming software.
 
 ---
@@ -109,19 +108,6 @@ g_ScopeOverlay/
 1. Open `g_ScopeOverlay.vcxproj` in Visual Studio 2022.
 2. Select the **x64** platform.
 3. Build in **Debug**.
-
----
-
-## Changelog
-
-### v0.1.0 — First Release
-First early beta release of g_ScopeOverlay. If you run into any bugs or issues, please [open an issue](../../issues) — it helps a lot!
-
----
-
-## Prior Art
-
-This project is functionally similar to [Scope X](https://centerpointgaming.com/scopex.html), a commercial screen magnifier overlay. g_ScopeOverlay was developed independently — the similarity was only discovered after the first versions were already built. g_ScopeOverlay is fully open-source under the Apache License 2.0.
 
 ---
 
