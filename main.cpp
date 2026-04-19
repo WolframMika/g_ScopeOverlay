@@ -1,54 +1,29 @@
-﻿#include "gCapture.h"
-#include "gBackend.h"
+﻿#include "gBackend.h"
+#include "gCapture.h"
+#include "Config.h"
+
 
 /*
 * Known Issues:
 * - **Not recordable:** The overlay cannot be captured by screen recording or streaming software.
-* - Doesn't work without imgui_demo.cpp
+* Notes:
+* 26 egzaminas lol
+* no vsync option (GUI with hardcoded vsync and Capture has his own weird shit)
+* no multi-thread (multi-threading is not that effective in this case. 
+	Issues with device contexts make it not worth it,
+	and this approach is already very fast since most of the work is handled by the GPU)
+* is it going to capture screen while not showing image? No.
 * To do:
-* - better gCapture
-* - clean up code
-* - make it more readable
-* - multi-thread
-* - multi-file
+* - better file/code framework
 * - multi-screen
+* - true fps (a true fps of capture)
 */
 
-ImGuiIO* io = nullptr;
-ImGuiStyle* style = nullptr;
-gCapture* screen_capture = nullptr;
-HWND hwnd;
-int screenW;
-int screenH;
 
-// Screen capture state
-gSizePos g_SP = { 400, 400, 0, 0 };
-static float g_zoom = 2.0f;
-static float g_round = 0.0f;
 
-bool g_show_fps_overlay = false;
 bool g_done = false;
-unsigned int g_mode = 0;
-bool g_vsync = true;
 
-bool g_toggle_zoom = false;
-bool g_show_zoom = false;
-
-struct gKeybind
-{
-	int key = 0;
-	bool change = false;
-	bool pressed = false;
-};
-
-gKeybind g_zoom_keybind = { VK_OEM_PLUS, false, false };
-
-
-void render();
 LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
-static void HelpMarker(const char* desc);
-static void FPSMarker(float scale = 0, ImVec2 offset = ImVec2(0.0, 0.0));
-const char* GetKeyName(int vk);
 
 // Main code
 int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
@@ -64,8 +39,8 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
 	screenW = ::GetSystemMetrics(SM_CXSCREEN);
 	screenH = ::GetSystemMetrics(SM_CYSCREEN);
 
-	g_SP.x = (screenW) / 2;
-	g_SP.y = (screenH) / 2;
+	Config::PosX = (screenW) / 2;
+	Config::PosY = (screenH) / 2;
 
 	hwnd = ::CreateWindowExW(
 		WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST,
@@ -87,7 +62,8 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
 	}
 
 	// Create capture
-	screen_capture = new gCapture(g_SP, gBackend::pd3dDevice, gBackend::pd3dDeviceContext);
+	gSizePos tSizePos = { Config::CaptW(), Config::CaptH(), Config::PosX, Config::PosY };
+	screen_capture = new gCapture(tSizePos, gBackend::pd3dDevice, gBackend::pd3dDeviceContext);
 
 	// Show the window
 	::ShowWindow(hwnd, SW_SHOWDEFAULT);
@@ -156,13 +132,13 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
 
 			bool isDown = (state & 0x8000); // key currently held
 
-			if (g_toggle_zoom)
+			if (Config::ToggleToZoom)
 			{
 				// toggle on press edge
 				if (isDown && !g_zoom_keybind.pressed)
 				{
 					g_zoom_keybind.pressed = true;
-					g_show_zoom = !g_show_zoom;
+					Config::ShowZoomOverlay = !Config::ShowZoomOverlay;
 				}
 				else if (!isDown)
 				{
@@ -171,7 +147,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
 			}
 			else
 			{
-				g_show_zoom = isDown;
+				Config::ShowZoomOverlay = isDown;
 			}
 		}
 
@@ -190,179 +166,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
 	return 0;
 }
 
-void render() {
-	// Start the Dear ImGui frame
-	ImGui_ImplDX11_NewFrame();
-	ImGui_ImplWin32_NewFrame();
-	ImGui::NewFrame();
 
-	// Fullscreen transparent non-interactive background
-	if (g_show_zoom) {
-		ImGui::SetNextWindowPos(ImVec2(0, 0));
-		ImGui::SetNextWindowSize(io->DisplaySize);
-		ImGui::SetNextWindowBgAlpha(0.0f);
-		ImGui::Begin("##overlay_bg", nullptr,
-			ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
-			ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav |
-			ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoDecoration |
-			ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing);
-
-		if (g_show_fps_overlay)
-			FPSMarker(2.0, ImVec2(8, 8));
-
-		// ??? Bug found: After PC wakes up from sleep screen region doesn't update and it is stuck at same frame
-		screen_capture->capture({ (unsigned int)(g_SP.dx / g_zoom), (unsigned int)(g_SP.dy / g_zoom), g_SP.x, g_SP.y });
-
-		ID3D11ShaderResourceView* captureTexSRV = screen_capture->get();
-
-		if (captureTexSRV)
-		{
-			ImVec2 pos = ImVec2((float)g_SP.x - (g_SP.dx / 2), (float)g_SP.y - (g_SP.dy / 2));
-			ImVec2 size = ImVec2(g_SP.dx, g_SP.dy);
-
-			ImDrawList* draw_list = ImGui::GetWindowDrawList();
-			draw_list->AddImageRounded(
-				(ImTextureID)captureTexSRV,
-				pos,
-				ImVec2(pos.x + size.x, pos.y + size.y),
-				ImVec2(0, 0),
-				ImVec2(1, 1),
-				IM_COL32_WHITE,
-				g_round
-			);
-		}
-
-		ImGui::End();
-	}
-
-	// Show settings window when our window is focused.
-	if (::GetForegroundWindow() == hwnd)
-	{
-		ImGui::Begin("g_ScopeOverlay Setting", nullptr, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_MenuBar);
-
-		if (ImGui::BeginMenuBar())
-		{
-			if (ImGui::MenuItem("Exit", "Alt+F4"))
-			{
-				g_done = true;
-			}
-
-			if (ImGui::MenuItem("Region"))
-			{
-				g_mode = 0;
-			}
-
-			if (ImGui::MenuItem("FPS"))
-			{
-				g_mode = 1;
-			}
-
-			if (ImGui::MenuItem("Keybind"))
-			{
-				g_mode = 2;
-			}
-
-			ImGui::EndMenuBar();
-		}
-
-		ImGui::PushFont(NULL, style->FontSizeBase * 1.2);
-
-		switch (g_mode)
-		{
-		case 1:
-			ImGui::Text("FPS settings");
-			FPSMarker();
-			ImGui::Checkbox("FPS Overlay", &g_show_fps_overlay);
-			ImGui::Checkbox("VSYNC", &g_vsync);
-
-			break;
-
-		case 2:
-			ImGui::Text("Keybind settings");
-
-			if (ImGui::Button("Set Keybind"))
-			{
-				g_zoom_keybind.change = true;
-			}
-
-			ImGui::Text("Key: %s", (g_zoom_keybind.change ? "Press a key..." : GetKeyName(g_zoom_keybind.key)));
-
-			ImGui::Checkbox("Is Toggle Zoom", &g_toggle_zoom);
-
-			break;
-
-		default:
-
-			unsigned int step = 1;
-			unsigned int step_fast = 10;
-			float max_round = min((g_SP.dx) / 2, (g_SP.dy) / 2);
-
-			ImGui::Text("Capture Region");
-
-			ImGui::SeparatorText("Position");
-
-			if (ImGui::InputScalar("x", ImGuiDataType_U32, &g_SP.x, &step, &step_fast)) {
-				g_SP.x = min(screenW - g_SP.dx / 2, max(0 + g_SP.dx / 2, g_SP.x));
-			}
-
-			if (ImGui::InputScalar("y", ImGuiDataType_U32, &g_SP.y, &step, &step_fast)) {
-				g_SP.y = min(screenH - g_SP.dy / 2, max(0 + g_SP.dy / 2, g_SP.y));
-			}
-
-			if (ImGui::Button("Center to screen")) {
-				g_SP.x = (screenW) / 2;
-				g_SP.y = (screenH) / 2;
-			}
-
-			ImGui::SameLine(); HelpMarker("Position is center of capture region. \n Hold Ctrl to adjust faster.");
-
-			ImGui::SeparatorText("Size");
-
-			if (ImGui::InputScalar("dx", ImGuiDataType_U32, &g_SP.dx, &step, &step_fast)) {
-				g_SP.dx = min(screenW, g_SP.dx);
-				g_SP.x = min(screenW - g_SP.dx / 2, max(0 + g_SP.dx / 2, g_SP.x));
-				g_round = min(max_round, g_round);
-			}
-
-			if (ImGui::InputScalar("dy", ImGuiDataType_U32, &g_SP.dy, &step, &step_fast)) {
-				g_SP.dy = min(screenH, g_SP.dy);
-				g_SP.y = min(screenH - g_SP.dy / 2, max(0 + g_SP.dy / 2, g_SP.y));
-				g_round = min(max_round, g_round);
-			}
-
-			ImGui::SeparatorText("Appearance");
-
-			ImGui::SliderFloat("zoom", &g_zoom, 1.0f, 8.0f, "%.1fx");
-
-			if (ImGui::SliderFloat("roundness", &g_round, 0.0f, max_round, "%.1fx")) {
-				g_round = min(max_round, g_round);
-			}
-
-			break;
-		}
-
-		ImGui::PopFont();
-		ImGui::End();
-	}
-
-	// Toggle click-through based on mouse capture
-	LONG_PTR exStyle = ::GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-	if (io->WantCaptureMouse)
-		exStyle &= ~WS_EX_TRANSPARENT;
-	else
-		exStyle |= WS_EX_TRANSPARENT;
-	::SetWindowLongPtrW(hwnd, GWL_EXSTYLE, exStyle);
-
-	// Rendering
-	ImGui::Render();
-	const float clear_color[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-	gBackend::pd3dDeviceContext->OMSetRenderTargets(1, &gBackend::mainRenderTargetView, nullptr);
-	gBackend::pd3dDeviceContext->ClearRenderTargetView(gBackend::mainRenderTargetView, clear_color);
-	ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
-
-	HRESULT hr = gBackend::pSwapChain->Present(g_vsync, 0); //vsync
-	gBackend::SwapChainOccluded = (hr == DXGI_STATUS_OCCLUDED);
-}
 
 // Helper functions
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -432,60 +236,3 @@ LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 }
 
 
-// Helper to display a little (?) mark which shows a tooltip when hovered.
-// In your own code you may want to display an actual icon if you are using a merged icon fonts (see docs/FONTS.md)
-static void HelpMarker(const char* desc)
-{
-	ImGui::TextDisabled("(?)");
-	if (ImGui::BeginItemTooltip())
-	{
-		ImGui::PushTextWrapPos(ImGui::GetFontSize() * 35.0f);
-		ImGui::TextUnformatted(desc);
-		ImGui::PopTextWrapPos();
-		ImGui::EndTooltip();
-	}
-}
-
-// Helper to display a FPS multy-colored mark.
-static void FPSMarker(float scale, ImVec2 offset)
-{
-	ImGuiIO& io = ImGui::GetIO(); (void)io;
-	ImGuiStyle& style = ImGui::GetStyle();
-
-	ImVec2 pos = ImGui::GetCursorPos();
-	ImGui::SetCursorPos(ImVec2(pos.x + offset.x, pos.y + offset.y));
-	ImGui::PushFont(NULL, style.FontSizeBase * scale);
-	if (io.Framerate < 15)
-		ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "%.1f FPS", io.Framerate);
-	else if (io.Framerate < 60)
-		ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "%.1f FPS", io.Framerate);
-	else
-		ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "%.1f FPS", io.Framerate);
-	ImGui::PopFont();
-}
-
-// Helper to get key name from virtual key code
-const char* GetKeyName(int vk)
-{
-	if (vk == 0) return "None";
-
-	static char name[64];
-
-	switch (vk)
-	{
-	case VK_LBUTTON:   return "Left Mouse";
-	case VK_RBUTTON:   return "Right Mouse";
-	case VK_MBUTTON:   return "Middle Mouse";
-	case VK_XBUTTON1:  return "Mouse X1";
-	case VK_XBUTTON2:  return "Mouse X2";
-	}
-
-	UINT scanCode = MapVirtualKey(vk, MAPVK_VK_TO_VSC);
-
-	if (vk == VK_SHIFT)   scanCode = MapVirtualKey(VK_LSHIFT, MAPVK_VK_TO_VSC);
-	if (vk == VK_CONTROL) scanCode = MapVirtualKey(VK_LCONTROL, MAPVK_VK_TO_VSC);
-	if (vk == VK_MENU)    scanCode = MapVirtualKey(VK_LMENU, MAPVK_VK_TO_VSC);
-
-	GetKeyNameTextA(scanCode << 16, name, sizeof(name));
-	return name;
-}

@@ -1,8 +1,5 @@
 #pragma once
 
-#ifndef gCapture_h
-#define gCapture_h
-
 #include <d3d11.h>
 #include <dxgi1_2.h>
 #pragma comment(lib, "dxgi.lib")
@@ -35,5 +32,3 @@ public:
 
 	~gCapture();
 };
-
-#endif

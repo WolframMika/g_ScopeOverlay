@@ -1,8 +1,5 @@
 #pragma once
 
-#ifndef gBackend_h
-#define gBackend_h
-
 #include "imgui.h"
 #include "imgui_impl_win32.h"
 #include "imgui_impl_dx11.h"
@@ -12,6 +9,9 @@
 #pragma comment(lib, "dwmapi.lib")
 #include <dxgi1_2.h>
 #pragma comment(lib, "dxgi.lib")
+#include <cmath>
+#include <algorithm>
+#include <string>
 
 #define IMGUI_DEFINE_MATH_OPERATORS
 
@@ -31,5 +31,3 @@ namespace gBackend
 	void CreateRenderTarget();
 	void CleanupRenderTarget();
 }
-
-#endif
