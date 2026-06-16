@@ -16,6 +16,7 @@ If g_ScopeOverlay reaches **2 GitHub stars**, I will start working on a more pol
 
 If you find the project useful, consider giving it a star. It helps show that there is interest in continued development.
 
+🙏 ⭐ 👉👈
 ---
 
 ## Visual Showcase
